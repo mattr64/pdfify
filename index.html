@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDFify — resize any PDF, image or text file</title>
+  <meta name="description" content="Convert PDFs, images and text files to a PDF at a page size you choose. Runs entirely in your browser." />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>PDF<span>ify</span></h1>
+      <p class="tag">Drop in a PDF, image or text file. Get a PDF at the page size you choose.</p>
+      <p class="privacy">🔒 Everything happens in your browser. Your files are never uploaded.</p>
+    </header>
+
+    <section id="drop" class="drop" tabindex="0" role="button" aria-label="Choose files">
+      <input id="file" type="file" multiple hidden
+        accept="application/pdf,image/jpeg,image/png,image/webp,image/gif,image/bmp,image/avif,text/plain,.pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.txt,.md,.csv,.log" />
+      <strong>Drop files here</strong>
+      <span>or click to browse · PDF, JPEG, PNG, WebP, GIF, BMP, AVIF, TXT</span>
+    </section>
+
+    <ul id="files" class="files" aria-live="polite"></ul>
+
+    <section class="panel">
+      <h2>Page size</h2>
+      <div id="sizes" class="sizes" role="radiogroup" aria-label="Page size"></div>
+
+      <h2>Maximum file size</h2>
+      <div id="targets" class="sizes" role="radiogroup" aria-label="Maximum file size"></div>
+      <label id="customBox" class="custom" hidden>
+        Limit: <input id="customMb" type="number" min="0.02" max="500" step="0.1" value="1.5" inputmode="decimal" /> MB
+      </label>
+      <p class="hint">Over the limit? Images are recompressed first, as gently as possible, and text stays sharp. Only if that isn't enough are pages turned into pictures.</p>
+
+      <div class="row">
+        <fieldset>
+          <legend>Orientation</legend>
+          <label><input type="radio" name="orientation" value="portrait" checked /> Portrait</label>
+          <label><input type="radio" name="orientation" value="landscape" /> Landscape</label>
+          <label title="Each page follows its own shape"><input type="radio" name="orientation" value="auto" /> Auto</label>
+        </fieldset>
+        <fieldset>
+          <legend>Margin</legend>
+          <label><input type="radio" name="margin" value="none" /> None</label>
+          <label><input type="radio" name="margin" value="small" checked /> Small</label>
+          <label><input type="radio" name="margin" value="medium" /> Medium</label>
+        </fieldset>
+        <fieldset>
+          <legend>Images</legend>
+          <label><input type="radio" name="fit" value="fit" checked /> Fit whole image</label>
+          <label><input type="radio" name="fit" value="fill" /> Fill page (crop)</label>
+        </fieldset>
+      </div>
+
+      <label class="combine"><input id="combine" type="checkbox" /> Combine all files into one PDF</label>
+
+      <div class="preview" aria-hidden="true"><div id="pagePreview"></div><span id="previewLabel"></span></div>
+    </section>
+
+    <button id="go" class="go" disabled>PDFify</button>
+    <progress id="progress" max="1" value="0" hidden></progress>
+    <p id="status" class="status" aria-live="polite" hidden></p>
+
+    <ul id="results" class="results" aria-live="polite"></ul>
+
+    <footer>
+      Word, Excel and PowerPoint files aren't supported: export them to PDF from the original app first.
+    </footer>
+  </main>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

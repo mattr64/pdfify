@@ -1,0 +1,22 @@
+{
+  "name": "pdfify",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node test/convert.test.mjs && node test/target.test.mjs",
+    "predev": "node scripts/copy-pdfjs-assets.mjs",
+    "prebuild": "node scripts/copy-pdfjs-assets.mjs"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.5",
+    "vite": "^5.4.0"
+  }
+}
