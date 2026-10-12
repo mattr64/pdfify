@@ -95,3 +95,7 @@ footer { margin-top: 32px; color: var(--dim); font-size: 0.85rem; }
 .results .note { flex-basis: 100%; font-size: 0.85rem; padding-top: 2px; }
 .results .note.ok { color: var(--accent); }
 .results .note.warn { color: #f0b24a; }
+
+fieldset:disabled { opacity: .4; }
+
+[hidden] { display: none !important; }

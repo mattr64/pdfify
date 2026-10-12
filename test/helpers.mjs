@@ -3,19 +3,41 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 
+const require = createRequire(import.meta.url);
+async function heicToRgba(bytes) {
+  const libheif = require('libheif-js/wasm-bundle');
+  const im = new libheif.HeifDecoder().decode(bytes)[0];
+  const w = im.get_width(), h = im.get_height();
+  const d = await new Promise((res, rej) => im.display({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h }, (x) => (x ? res(x) : rej(new Error('heic decode failed')))));
+  return { data: Buffer.from(d.data.buffer), width: w, height: h };
+}
+
 export const decodeImage = async (bytes, info, profile) => {
-  let img = sharp(bytes, { failOn: 'none' }).rotate();
+  let img, srcWidth, srcHeight;
+  if (info.format === 'heic') {
+    const { data, width, height } = await heicToRgba(bytes);
+    img = sharp(data, { raw: { width, height, channels: 4 } });
+    srcWidth = width; srcHeight = height;
+  } else {
+    const m = await sharp(bytes, { failOn: 'none' }).metadata();
+    const swap = (m.orientation ?? 1) >= 5;
+    srcWidth = swap ? m.height : m.width; srcHeight = swap ? m.width : m.height;
+    img = sharp(bytes, { failOn: 'none' }).rotate();
+  }
   if (!profile) {
     const asPng = ['png', 'gif', 'bmp', 'webp'].includes(info.format);
     return asPng
-      ? { type: 'png', bytes: new Uint8Array(await img.png().toBuffer()) }
-      : { type: 'jpg', bytes: new Uint8Array(await img.flatten({ background: '#fff' }).jpeg({ quality: 95 }).toBuffer()) };
+      ? { type: 'png', bytes: new Uint8Array(await img.png().toBuffer()), srcWidth, srcHeight }
+      : { type: 'jpg', bytes: new Uint8Array(await img.flatten({ background: '#fff' }).jpeg({ quality: 95 }).toBuffer()), srcWidth, srcHeight };
   }
-  img = img.resize({ width: profile.maxLongSide, height: profile.maxLongSide, fit: 'inside', withoutEnlargement: true });
-  return { type: 'jpg', bytes: new Uint8Array(await img.flatten({ background: '#fff' }).jpeg({ quality: Math.round(profile.quality * 100) }).toBuffer()) };
+  const long = Math.max(srcWidth, srcHeight);
+  const cap = Math.max(1, Math.min(profile.maxLongSide ?? Infinity, profile.scale != null ? long * profile.scale : Infinity));
+  img = img.resize({ width: Math.round(cap), height: Math.round(cap), fit: 'inside', withoutEnlargement: true });
+  return { type: 'jpg', bytes: new Uint8Array(await img.flatten({ background: '#fff' }).jpeg({ quality: Math.round(profile.quality * 100) }).toBuffer()), srcWidth, srcHeight };
 };
 
 export const recodeImage = async (job) => {

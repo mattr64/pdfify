@@ -32,6 +32,17 @@ export const PAGE_SIZES = [
   { id: 'legal', label: 'US Legal', note: '8.5 × 14 in', w: 8.5 * IN, h: 14 * IN },
 ];
 
+// Sizes relative to the source instead of a fixed paper size. PDFs keep each page's own size (x factor);
+// images use their real physical size (pixels / DPI, or 72 DPI if the file doesn't say), x factor.
+export const NATIVE_SIZES = [
+  { id: 'original', label: 'Original size', note: '100% of the source', factor: 1 },
+  { id: 'p75', label: '75%', note: 'of original size', factor: 0.75 },
+  { id: 'p50', label: '50%', note: 'of original size', factor: 0.5 },
+];
+const nativeFactor = (id) => NATIVE_SIZES.find((n) => n.id === id)?.factor ?? null;
+const sizeTag = (id) => ({ original: 'original', p75: '75pct', p50: '50pct' }[id] ?? id.toUpperCase());
+const MAX_PAGE_PT = 14000; // PDF viewers choke above 14400 pt (200 in)
+
 export const MARGINS = { none: 0, small: 0.03, medium: 0.06 }; // fraction of the short side
 
 export class UserError extends Error {}
@@ -39,6 +50,7 @@ export class UserError extends Error {}
 // ---------- sniffing ----------
 const ascii = (b, start, len) => String.fromCharCode(...b.subarray(start, start + len));
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'csv', 'log']);
+const HEIC_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs', 'mif1', 'msf1']);
 
 export function detectKind(bytes, name = '') {
   if (!bytes || bytes.length === 0) throw new UserError('The file is empty.');
@@ -55,9 +67,13 @@ export function detectKind(bytes, name = '') {
   if (ascii(b, 0, 4) === 'RIFF' && ascii(b, 8, 4) === 'WEBP') return { kind: 'image', format: 'webp', mime: 'image/webp', label: 'WebP' };
   if (b[0] === 0x42 && b[1] === 0x4d) return { kind: 'image', format: 'bmp', mime: 'image/bmp', label: 'BMP' };
   if (ascii(b, 4, 4) === 'ftyp') {
-    const brand = ascii(b, 8, 4);
-    if (brand === 'avif' || brand === 'avis') return { kind: 'image', format: 'avif', mime: 'image/avif', label: 'AVIF' };
-    throw new UserError('HEIC/video files are not supported. Export the photo as JPEG or PNG first.');
+    // ISO media file: the 'brands' say whether it is a still image (AVIF, HEIC) or something else (video).
+    const boxEnd = Math.min(((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0, 96, b.length);
+    const brands = [ascii(b, 8, 4)];
+    for (let i = 16; i + 4 <= boxEnd; i += 4) brands.push(ascii(b, i, 4));
+    if (brands.some((x) => x === 'avif' || x === 'avis')) return { kind: 'image', format: 'avif', mime: 'image/avif', label: 'AVIF' };
+    if (brands.some((x) => HEIC_BRANDS.has(x))) return { kind: 'image', format: 'heic', mime: 'image/heic', label: 'HEIC' };
+    throw new UserError('This looks like a video, not a photo.');
   }
 
   // Things we recognise and refuse, with a helpful message.
@@ -140,6 +156,19 @@ function contentArea(page, marginKey) {
   return { x: m, y: m, w: page.w - 2 * m, h: page.h - 2 * m };
 }
 
+// Where a source of vw x vh points goes: the page, and the box inside it (after margins).
+// Relative sizes ignore margins so the page is exactly factor x original.
+function layoutFor(opts, vw, vh) {
+  const f = nativeFactor(opts.size);
+  if (f) {
+    const k = Math.min(1, MAX_PAGE_PT / Math.max(vw * f, vh * f));
+    const cw = vw * f * k, ch = vh * f * k; // margins don't apply: the page is exactly factor x the source
+    return { size: { w: cw, h: ch }, area: { x: 0, y: 0, w: cw, h: ch } };
+  }
+  const size = resolvePage(opts.size, opts.orientation, vw > vh);
+  return { size, area: contentArea(size, opts.margin) };
+}
+
 // ---------- size targets ----------
 // Decimal units on purpose: 900 KB = 900,000 bytes is a little *under* 900 KiB,
 // so a file that passes here also passes a limit checked either way.
@@ -171,7 +200,6 @@ function pageLongPt(sizeId) {
   const s = PAGE_SIZES.find((x) => x.id === sizeId);
   return Math.max(s.w, s.h);
 }
-const rungMaxSide = (opts, rung) => Math.round((pageLongPt(opts.size) / 72) * rung.dpi);
 
 // ---------- JPEG orientation (EXIF) ----------
 export function jpegOrientation(b) {
@@ -200,6 +228,57 @@ export function jpegOrientation(b) {
     i += 2 + len;
   }
   return 1;
+}
+
+// Physical resolution stored in a JPEG (JFIF or EXIF) or PNG, or null if it doesn't say.
+export function imageDpi(b, format) {
+  try {
+    let dpi = null;
+    if (format === 'png') {
+      let i = 8;
+      while (i + 12 <= b.length) {
+        const len = ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+        const type = ascii(b, i + 4, 4);
+        if (type === 'pHYs' && len >= 9) {
+          const ppu = ((b[i + 8] << 24) | (b[i + 9] << 16) | (b[i + 10] << 8) | b[i + 11]) >>> 0;
+          if (b[i + 16] === 1 && ppu) dpi = ppu * 0.0254; // pixels per metre
+          break;
+        }
+        if (type === 'IDAT' || type === 'IEND') break;
+        i += 12 + len;
+      }
+    } else if (format === 'jpeg') {
+      let i = 2;
+      while (i + 4 < b.length && b[i] === 0xff && !dpi) {
+        const m = b[i + 1];
+        if (m === 0xda || m === 0xd9) break;
+        const len = (b[i + 2] << 8) | b[i + 3];
+        if (m === 0xe0 && ascii(b, i + 4, 5) === 'JFIF\0') {
+          const units = b[i + 11], x = (b[i + 12] << 8) | b[i + 13];
+          if (units === 1 && x) dpi = x;
+          else if (units === 2 && x) dpi = x * 2.54;
+        } else if (m === 0xe1 && ascii(b, i + 4, 6) === 'Exif\0\0') {
+          const t = i + 10, le = b[t] === 0x49;
+          const u16 = (o) => (le ? b[o] | (b[o + 1] << 8) : (b[o] << 8) | b[o + 1]);
+          const u32 = (o) => (le ? (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0 : ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0);
+          const ifd = t + u32(t + 4);
+          let xres = null, unit = 2;
+          for (let k = 0, n = u16(ifd); k < n; k++) {
+            const e = ifd + 2 + k * 12;
+            if (e + 12 > b.length) break;
+            if (u16(e) === 0x011a) { const o = t + u32(e + 8); const den = u32(o + 4); if (den) xres = u32(o) / den; }
+            if (u16(e) === 0x0128) unit = u16(e + 8);
+          }
+          if (xres) dpi = unit === 3 ? xres * 2.54 : xres;
+        }
+        i += 2 + len;
+      }
+    }
+    dpi = dpi && Math.round(dpi); // PNG stores pixels per metre, so 72 dpi reads back as 72.009
+    return dpi && dpi >= 36 && dpi <= 1200 ? dpi : null; // below ~36 means 'not really set' (1 px/mm = 25.4)
+  } catch {
+    return null;
+  }
 }
 
 // ---------- recompressing images inside a PDF ----------
@@ -251,7 +330,11 @@ async function recompressPdfImages(src, opts, hooks, rung, stats) {
     }
   }
 
-  const maxLongSide = rungMaxSide(opts, rung);
+  const f = nativeFactor(opts.size);
+  const longPt = f
+    ? Math.max(...src.getPages().map((p) => { const c = p.getCropBox(); return Math.max(c.width, c.height); })) * f
+    : pageLongPt(opts.size);
+  const maxLongSide = Math.round((longPt / 72) * rung.dpi);
   for (const [ref, obj] of entries) {
     if (!isImage(obj) || maskRefs.has(ref.tag)) continue;
     if (obj.contents.length < MIN_RECODE_BYTES) continue;
@@ -333,10 +416,9 @@ async function appendPdf(out, file, opts, hooks, mode) {
     const bw = box.right - box.left, bh = box.top - box.bottom;
     const vw = quarter ? bh : bw;
     const vh = quarter ? bw : bh;
-    const size = resolvePage(opts.size, opts.orientation, vw > vh);
+    const { size, area } = layoutFor(opts, vw, vh);
     const page = out.addPage([size.w, size.h]);
     if (!emb) return;
-    const area = contentArea(size, opts.margin);
     const s = Math.min(area.w / vw, area.h / vh);
     const cx = area.x + (area.w - vw * s) / 2;
     const cy = area.y + (area.h - vh * s) / 2;
@@ -361,9 +443,8 @@ async function appendPdfRaster(out, file, opts, hooks, mode) {
   }
   for (let i = 0; i < handle.numPages; i++) {
     const { w: pw, h: ph } = handle.pageSize(i);
-    const size = resolvePage(opts.size, opts.orientation, pw > ph);
+    const { size, area } = layoutFor(opts, pw, ph);
     const page = out.addPage([size.w, size.h]);
-    const area = contentArea(size, opts.margin);
     const s = Math.min(area.w / pw, area.h / ph);
     const placedW = pw * s, placedH = ph * s;
     let widthPx = Math.round((placedW / 72) * mode.rung.dpi);
@@ -387,9 +468,17 @@ async function appendImage(out, file, info, opts, hooks, mode) {
   if (peek && (peek.w < 1 || peek.h < 1 || peek.w * peek.h > LIMITS.maxImagePixels)) {
     throw new UserError(`This image is too large to process (over ${Math.round(LIMITS.maxImagePixels / 1e6)} megapixels).`);
   }
-  const profile = mode.tier === 'original' ? null : { maxLongSide: rungMaxSide(opts, mode.rung), quality: mode.rung.q, jpeg: true };
+  const dpi = imageDpi(bytes, info.format) || 72;
+  const f = nativeFactor(opts.size);
+  // Resolution cap for shrinking: a paper size gives a fixed pixel budget; a relative size scales with the image itself.
+  const profile = mode.tier === 'original' ? null : {
+    maxLongSide: f ? null : Math.round((pageLongPt(opts.size) / 72) * mode.rung.dpi),
+    scale: f ? (f * mode.rung.dpi) / dpi : null,
+    quality: mode.rung.q,
+    jpeg: true,
+  };
 
-  let img;
+  let img, srcW = peek?.w, srcH = peek?.h;
   // Untouched JPEGs go straight in: lossless, instant, and never bigger than the original.
   if (!profile && info.format === 'jpeg' && jpegOrientation(bytes) === 1 && peek && Math.max(peek.w, peek.h) <= LIMITS.maxImageLongSide) {
     try { img = await out.embedJpg(bytes); } catch { img = null; }
@@ -399,11 +488,19 @@ async function appendImage(out, file, info, opts, hooks, mode) {
     let decoded;
     try {
       decoded = await hooks.decodeImage(bytes, info, profile);
-    } catch {
+    } catch (e) {
+      console.warn('Image decode failed', e);
       throw new UserError('This image could not be decoded. It may be damaged or in an unsupported variant.');
     }
     img = decoded.type === 'jpg' ? await out.embedJpg(decoded.bytes) : await out.embedPng(decoded.bytes);
+    srcW = decoded.srcWidth ?? img.width; srcH = decoded.srcHeight ?? img.height; // size before any downscaling
     if (profile) mode.stats.touched++;
+  }
+  if (f) {
+    // Relative size: the page is the image's physical size (x factor); the picture fills it exactly.
+    const { size, area } = layoutFor(opts, ((srcW ?? img.width) * 72) / dpi, ((srcH ?? img.height) * 72) / dpi);
+    out.addPage([size.w, size.h]).drawImage(img, { x: area.x, y: area.y, width: area.w, height: area.h });
+    return 1;
   }
   const size = resolvePage(opts.size, opts.orientation, img.width > img.height);
   const page = out.addPage([size.w, size.h]);
@@ -456,7 +553,9 @@ async function appendText(out, bytes, opts) {
   }
   const text = new TextDecoder('utf-8').decode(bytes).replace(/\r\n?/g, '\n');
   const font = await out.embedFont(StandardFonts.Courier);
-  const size = resolvePage(opts.size, opts.orientation === 'landscape' ? 'landscape' : 'portrait', false);
+  const f = nativeFactor(opts.size);
+  const a4 = PAGE_SIZES.find((x) => x.id === 'a4'); // text has no "original" size, so A4 stands in
+  const size = f ? { w: a4.w * f, h: a4.h * f } : resolvePage(opts.size, opts.orientation === 'landscape' ? 'landscape' : 'portrait', false);
   const textMargin = Math.max(MARGINS[opts.margin] ?? 0, 0.06);
   const m = textMargin * Math.min(size.w, size.h);
   const fs = Math.max(7, Math.min(11, Math.min(size.w, size.h) / 55));
@@ -593,7 +692,7 @@ async function fitGroup(files, opts, hooks) {
  */
 export async function convertFiles(files, opts, hooks = {}) {
   if (files.length > LIMITS.maxFiles) throw new UserError(`Please convert at most ${LIMITS.maxFiles} files at a time.`);
-  const tag = `${opts.size.toUpperCase()}${opts.orientation === 'auto' ? '' : '-' + opts.orientation}`;
+  const tag = nativeFactor(opts.size) ? sizeTag(opts.size) : `${opts.size.toUpperCase()}${opts.orientation === 'auto' ? '' : '-' + opts.orientation}`;
   const combine = opts.combine && files.length > 1;
   const groups = combine
     ? [{ sourceName: `${files.length} files`, name: `combined-${tag}.pdf`, files }]

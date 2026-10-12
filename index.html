@@ -17,9 +17,9 @@
 
     <section id="drop" class="drop" tabindex="0" role="button" aria-label="Choose files">
       <input id="file" type="file" multiple hidden
-        accept="application/pdf,image/jpeg,image/png,image/webp,image/gif,image/bmp,image/avif,text/plain,.pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.txt,.md,.csv,.log" />
+        accept="application/pdf,image/jpeg,image/png,image/webp,image/gif,image/bmp,image/avif,image/heic,image/heif,text/plain,.pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.heic,.heif,.txt,.md,.csv,.log" />
       <strong>Drop files here</strong>
-      <span>or click to browse · PDF, JPEG, PNG, WebP, GIF, BMP, AVIF, TXT</span>
+      <span>or click to browse · PDF, JPEG, PNG, HEIC, WebP, GIF, BMP, AVIF, TXT</span>
     </section>
 
     <ul id="files" class="files" aria-live="polite"></ul>
@@ -27,6 +27,8 @@
     <section class="panel">
       <h2>Page size</h2>
       <div id="sizes" class="sizes" role="radiogroup" aria-label="Page size"></div>
+
+      <p id="nativeHint" class="hint" hidden>Pages follow their source: PDFs keep each page's own size, images use their real physical size (from the DPI stored in the file, or 72 DPI if it has none). Margins and orientation don't apply.</p>
 
       <h2>Maximum file size</h2>
       <div id="targets" class="sizes" role="radiogroup" aria-label="Maximum file size"></div>
@@ -36,13 +38,13 @@
       <p class="hint">Over the limit? Images are recompressed first, as gently as possible, and text stays sharp. Only if that isn't enough are pages turned into pictures.</p>
 
       <div class="row">
-        <fieldset>
+        <fieldset id="orientationSet">
           <legend>Orientation</legend>
           <label><input type="radio" name="orientation" value="portrait" checked /> Portrait</label>
           <label><input type="radio" name="orientation" value="landscape" /> Landscape</label>
           <label title="Each page follows its own shape"><input type="radio" name="orientation" value="auto" /> Auto</label>
         </fieldset>
-        <fieldset>
+        <fieldset id="marginSet">
           <legend>Margin</legend>
           <label><input type="radio" name="margin" value="none" /> None</label>
           <label><input type="radio" name="margin" value="small" checked /> Small</label>

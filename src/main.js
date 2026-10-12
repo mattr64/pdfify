@@ -1,6 +1,6 @@
 // The legacy build includes polyfills, so it works on browsers that are a few versions behind.
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
-import { convertFiles, detectKind, LIMITS, MARGINS, PAGE_SIZES, TARGET_PRESETS, UserError } from './convert.js';
+import { convertFiles, detectKind, LIMITS, MARGINS, NATIVE_SIZES, PAGE_SIZES, TARGET_PRESETS, UserError } from './convert.js';
 
 const $ = (id) => document.getElementById(id);
 const drop = $('drop'), input = $('file'), list = $('files'), go = $('go');
@@ -17,16 +17,30 @@ let objectUrls = [];
 const fmtSize = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 1 : 2)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
 
 // ---------- page size picker ----------
-sizesEl.innerHTML = PAGE_SIZES.map(
+sizesEl.innerHTML = [...PAGE_SIZES, ...NATIVE_SIZES].map(
   (s) => `<label><input type="radio" name="size" value="${s.id}" ${s.id === selectedSize ? 'checked' : ''}>
     <span>${s.label}</span><small>${s.note}</small></label>`
 ).join('');
 sizesEl.addEventListener('change', (e) => { selectedSize = e.target.value; updatePreview(); });
+const isNative = () => NATIVE_SIZES.some((n) => n.id === selectedSize);
 document.querySelectorAll('input[name=orientation],input[name=margin]').forEach((el) => el.addEventListener('change', updatePreview));
 
 function opt(name) { return document.querySelector(`input[name=${name}]:checked`).value; }
 
 function updatePreview() {
+  const native = NATIVE_SIZES.find((x) => x.id === selectedSize);
+  // Relative sizes follow each source, so orientation doesn't apply.
+  document.querySelectorAll('input[name=orientation]').forEach((el) => { el.disabled = !!native; });
+  $('orientationSet').disabled = !!native;
+  $('marginSet').disabled = !!native; // relative sizes are exactly x% of the source, no margins
+  $('nativeHint').hidden = !native;
+  if (native) {
+    const box = $('pagePreview');
+    box.style.width = '56px'; box.style.height = '40px';
+    box.style.boxShadow = '0 2px 10px #0004';
+    $('previewLabel').textContent = `${native.label} (each page follows its source)`;
+    return;
+  }
   const s = PAGE_SIZES.find((x) => x.id === selectedSize);
   const o = opt('orientation');
   const landscape = o === 'landscape';
@@ -131,26 +145,57 @@ function canvasToBytes(canvas, mime, quality) {
 }
 const release = (c) => { c.width = c.height = 0; };
 
+// HEIC/HEIF (iPhone photos): decoded by a small WebAssembly build of libheif, downloaded only when needed.
+let heifLib = null;
+async function loadHeif() {
+  const factory = (await import('libheif-js/libheif-wasm/libheif-bundle.mjs')).default;
+  const lib = await factory(); // the module's default export is a factory, not the decoder itself
+  for (let i = 0; !lib.HeifDecoder && i < 100; i++) await new Promise((r) => setTimeout(r, 50)); // wasm still starting
+  if (!lib.HeifDecoder) throw new Error('HEIC decoder failed to start');
+  return lib;
+}
+async function heicToCanvas(bytes) {
+  heifLib ??= await loadHeif();
+  const images = new heifLib.HeifDecoder().decode(bytes);
+  if (!images || !images.length) throw new Error('no image in file');
+  const im = images[0];
+  const w = im.get_width(), h = im.get_height();
+  if (w * h > LIMITS.maxImagePixels) throw new Error('image too large');
+  const canvas = makeCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  const data = ctx.createImageData(w, h);
+  await new Promise((res, rej) => im.display(data, (d) => (d ? res() : rej(new Error('HEIF processing error')))));
+  ctx.putImageData(data, 0, 0);
+  return canvas;
+}
+
 // ---------- hook: decode an uploaded image (the browser decodes pixels; nothing is executed) ----------
 async function decodeImage(bytes, info, profile) {
-  const blob = new Blob([bytes], { type: info.mime });
-  const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+  let source, sw, sh, cleanup;
+  if (info.format === 'heic') {
+    const c = await heicToCanvas(bytes);
+    source = c; sw = c.width; sh = c.height; cleanup = () => release(c);
+  } else {
+    const bmp = await createImageBitmap(new Blob([bytes], { type: info.mime }), { imageOrientation: 'from-image' });
+    source = bmp; sw = bmp.width; sh = bmp.height; cleanup = () => bmp.close();
+  }
   try {
-    const long = Math.max(bmp.width, bmp.height);
-    const cap = profile ? Math.min(profile.maxLongSide, LIMITS.maxImageLongSide) : LIMITS.maxImageLongSide;
+    const long = Math.max(sw, sh);
+    let cap = LIMITS.maxImageLongSide;
+    if (profile) cap = Math.min(cap, profile.maxLongSide ?? Infinity, profile.scale != null ? long * profile.scale : Infinity);
     const k = Math.min(1, cap / long); // never upscale
-    const w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+    const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
     const canvas = makeCanvas(w, h);
     const ctx = canvas.getContext('2d');
     const asPng = !profile && ['png', 'gif', 'bmp', 'webp'].includes(info.format);
     if (!asPng) { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); }
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bmp, 0, 0, w, h);
+    ctx.drawImage(source, 0, 0, w, h);
     const out = await canvasToBytes(canvas, asPng ? 'image/png' : 'image/jpeg', profile ? profile.quality : 0.95);
     release(canvas);
-    return { type: asPng ? 'png' : 'jpg', bytes: out };
+    return { type: asPng ? 'png' : 'jpg', bytes: out, srcWidth: sw, srcHeight: sh };
   } finally {
-    bmp.close();
+    cleanup();
   }
 }
 

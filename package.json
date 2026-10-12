@@ -7,11 +7,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test/convert.test.mjs && node test/target.test.mjs",
+    "test": "node test/convert.test.mjs && node test/target.test.mjs && node test/sizes.test.mjs",
     "predev": "node scripts/copy-pdfjs-assets.mjs",
     "prebuild": "node scripts/copy-pdfjs-assets.mjs"
   },
   "dependencies": {
+    "libheif-js": "^1.23.5",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.4.299"
   },
